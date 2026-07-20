@@ -1,243 +1,195 @@
 <?php
 require_once __DIR__ . '/../../config/config.php';
-require_once __DIR__ . '/../../models/User.php';
-require_once __DIR__ . '/../../models/Blog.php';
 require_once __DIR__ . '/../../helpers/ResponseHelper.php';
-require_once __DIR__ . '/../../helpers/ValidationHelper.php';
-require_once __DIR__ . '/../../helpers/Sanitizer.php';
-require_once __DIR__ . '/../middleware/AuthMiddleware.php';
-require_once __DIR__ . '/../middleware/RoleMiddleware.php';
+require_once __DIR__ . '/../../database/Database.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
+$path = isset($_GET['path']) ? $_GET['path'] : '';
 
-// Handle PATH_INFO safely
-$path_info = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : '';
-$request = explode('/', trim($path_info, '/'));
-$id = isset($request[0]) && is_numeric($request[0]) ? (int)$request[0] : null;
+// Initialize database connection
+$db = new Database();
 
-switch ($method) {
-  case 'GET':
-    if ($id) {
-      getBlog($id);
-    } else {
-      getAllBlogs();
+// GET: Fetch blogs
+if ($method === 'GET') {
+    $action = explode('/', trim($path, '/'));
+    
+    if (empty($action[0]) || $action[0] === 'blogs') {
+        // Get all blogs or filter
+        $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+        $limit = isset($_GET['limit']) ? min(100, intval($_GET['limit'])) : 9;
+        $offset = ($page - 1) * $limit;
+        
+        try {
+            $query = "SELECT id, title, content as excerpt, image, author_id, category, 
+                     likes, comments_count, created_at as date, read_time 
+                     FROM blogs WHERE status = 'published' ORDER BY created_at DESC 
+                     LIMIT ? OFFSET ?";
+            
+            $stmt = $db->prepare($query);
+            $stmt->bind_param('ii', $limit, $offset);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $blogs = [];
+            
+            while ($row = $result->fetch_assoc()) {
+                // Get author info
+                $authorQuery = "SELECT id, name, avatar FROM users WHERE id = ?";
+                $authorStmt = $db->prepare($authorQuery);
+                $authorStmt->bind_param('i', $row['author_id']);
+                $authorStmt->execute();
+                $authorResult = $authorStmt->get_result();
+                $author = $authorResult->fetch_assoc();
+                
+                $row['author'] = $author ?: ['name' => 'Unknown', 'avatar' => null];
+                $row['readTime'] = $row['read_time'] . ' min read';
+                unset($row['read_time']);
+                $blogs[] = $row;
+            }
+            
+            ResponseHelper::success('Blogs fetched successfully', [
+                'data' => $blogs,
+                'page' => $page,
+                'limit' => $limit
+            ]);
+        } catch (Exception $e) {
+            ResponseHelper::error('Failed to fetch blogs: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+        }
+    } elseif (isset($action[0]) && is_numeric($action[0])) {
+        // Get single blog by ID
+        $blogId = intval($action[0]);
+        
+        try {
+            $query = "SELECT * FROM blogs WHERE id = ? AND status = 'published'";
+            $stmt = $db->prepare($query);
+            $stmt->bind_param('i', $blogId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $blog = $result->fetch_assoc();
+            
+            if ($blog) {
+                // Get author info
+                $authorQuery = "SELECT id, name, avatar FROM users WHERE id = ?";
+                $authorStmt = $db->prepare($authorQuery);
+                $authorStmt->bind_param('i', $blog['author_id']);
+                $authorStmt->execute();
+                $authorResult = $authorStmt->get_result();
+                $blog['author'] = $authorResult->fetch_assoc();
+                
+                ResponseHelper::success('Blog fetched successfully', $blog);
+            } else {
+                ResponseHelper::error('Blog not found', HTTP_NOT_FOUND);
+            }
+        } catch (Exception $e) {
+            ResponseHelper::error('Failed to fetch blog: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+        }
     }
-    break;
-  
-  case 'POST':
-    RoleMiddleware::requireBlogger();
-    createBlog();
-    break;
-
-  case 'PUT':
-    RoleMiddleware::requireBlogger();
-    if ($id) {
-      updateBlog($id);
-    } else {
-      ResponseHelper::error('Blog ID required', HTTP_BAD_REQUEST);
-    }
-    break;
-
-  case 'DELETE':
-    RoleMiddleware::requireBlogger();
-    if ($id) {
-      deleteBlog($id);
-    } else {
-      ResponseHelper::error('Blog ID required', HTTP_BAD_REQUEST);
-    }
-    break;
-
-  default:
-    ResponseHelper::error('Method not allowed', HTTP_BAD_REQUEST);
 }
 
-function getAllBlogs()
-{
-  $blog = new Blog();
-  $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-  $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : ITEMS_PER_PAGE;
-  $status = isset($_GET['status']) ? $_GET['status'] : 'published';
-  $category = isset($_GET['category']) ? $_GET['category'] : null;
-  $search = isset($_GET['search']) ? $_GET['search'] : null;
-  $author = isset($_GET['author']) ? (int)$_GET['author'] : null;
-
-  $filters = [
-    'status' => $status,
-    'category' => $category,
-    'search' => $search,
-    'author' => $author
-  ];
-
-  $result = $blog->getAll($page, $limit, $filters);
-
-  ResponseHelper::success([
-    'blogs' => $result['blogs'],
-    'pagination' => [
-      'current_page' => $page,
-      'per_page' => $limit,
-      'total' => $result['total'],
-      'last_page' => ceil($result['total'] / $limit)
-    ]
-  ]);
-}
-
-function getBlog($id)
-{
-  $blog = new Blog();
-  if ($blog->findById($id)) {
-    // Increment view count
-    $blog->incrementViews($id);
-
-    // Get tags
-    $tags = $blog->getTags($id);
-
-    // Get author info
-    $author = new User();
-    $author->findById($blog->author_id);
-
-    ResponseHelper::success([
-      'id' => $blog->id,
-      'title' => $blog->title,
-      'slug' => $blog->slug,
-      'content' => $blog->content,
-      'excerpt' => $blog->excerpt,
-      'featured_image' => $blog->featured_image,
-      'author' => [
-        'id' => $author->id,
-        'name' => $author->name,
-        'avatar' => $author->avatar
-      ],
-      'category_id' => $blog->category_id,
-      'tags' => $tags,
-      'views' => $blog->views,
-      'likes' => $blog->likes,
-      'status' => $blog->status,
-      'published_at' => $blog->published_at,
-      'created_at' => $blog->created_at,
-      'updated_at' => $blog->updated_at
-    ]);
-  } else {
-    ResponseHelper::notFound('Blog');
-  }
-}
-
-function createBlog()
-{
-  $data = json_decode(file_get_contents("php://input"), true);
-  $user = AuthMiddleware::getAuthenticatedUser();
-
-  $required = ['title', 'content'];
-  $errors = ValidationHelper::validateRequired($data, $required);
-  if ($errors !== true) {
-    ResponseHelper::validationError($errors);
-  }
-
-  $blog = new Blog();
-  $blog->title = ValidationHelper::sanitizeInput($data['title']);
-  $blog->slug = Sanitizer::sanitizeSlug($data['title']);
-  $blog->content = $data['content'];
-  $blog->excerpt = isset($data['excerpt']) ? ValidationHelper::sanitizeInput($data['excerpt']) : substr(strip_tags($data['content']), 0, 200);
-  $blog->featured_image = isset($data['featured_image']) ? $data['featured_image'] : null;
-  $blog->author_id = $user->id;
-  $blog->category_id = isset($data['category_id']) ? (int)$data['category_id'] : null;
-  $blog->status = isset($data['status']) ? $data['status'] : BLOG_DRAFT;
-  $blog->seo_title = isset($data['seo_title']) ? $data['seo_title'] : null;
-  $blog->seo_description = isset($data['seo_description']) ? $data['seo_description'] : null;
-
-  if ($blog->status === BLOG_SCHEDULED && isset($data['scheduled_for'])) {
-    $blog->scheduled_for = date('Y-m-d H:i:s', strtotime($data['scheduled_for']));
-  }
-
-  if ($blog->create()) {
-    // Add tags if provided
-    if (isset($data['tags']) && is_array($data['tags'])) {
-      $blog->addTags($blog->id, $data['tags']);
+// POST: Create blog (requires authentication)
+elseif ($method === 'POST') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    
+    // Check authentication
+    $token = isset(getallheaders()['Authorization']) ? str_replace('Bearer ', '', getallheaders()['Authorization']) : null;
+    if (!$token) {
+        ResponseHelper::error('Unauthorized', HTTP_UNAUTHORIZED);
     }
-
-    ResponseHelper::success(['id' => $blog->id], 'Blog created successfully', HTTP_CREATED);
-  } else {
-    ResponseHelper::error('Failed to create blog', HTTP_INTERNAL_ERROR);
-  }
+    
+    // Validate required fields
+    if (!isset($data['title']) || !isset($data['content'])) {
+        ResponseHelper::error('Title and content are required', HTTP_BAD_REQUEST);
+    }
+    
+    try {
+        $query = "INSERT INTO blogs (title, content, image, category, author_id, status, read_time, created_at) 
+                 VALUES (?, ?, ?, ?, ?, 'published', ?, NOW())";
+        $stmt = $db->prepare($query);
+        
+        $userId = 1;
+        $readTime = isset($data['read_time']) ? $data['read_time'] : 5;
+        $image = $data['image'] ?? null;
+        $category = $data['category'] ?? 'General';
+        
+        $stmt->bind_param('ssssii', 
+            $data['title'], 
+            $data['content'], 
+            $image,
+            $category,
+            $userId,
+            $readTime
+        );
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Blog created successfully', ['id' => $db->insert_id], HTTP_CREATED);
+        } else {
+            ResponseHelper::error('Failed to create blog', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+    }
 }
 
-function updateBlog($id)
-{
-  $data = json_decode(file_get_contents("php://input"), true);
-  $user = AuthMiddleware::getAuthenticatedUser();
-
-  $blog = new Blog();
-  if (!$blog->findById($id)) {
-    ResponseHelper::notFound('Blog');
-  }
-
-  // Check if user is author or admin
-  $userRoles = $user->getUserRoles($user->id);
-  if ($blog->author_id != $user->id && !in_array(ROLE_ADMIN, $userRoles)) {
-    ResponseHelper::forbidden('You can only edit your own blogs');
-  }
-
-  if (isset($data['title'])) {
-    $blog->title = ValidationHelper::sanitizeInput($data['title']);
-    $blog->slug = Sanitizer::sanitizeSlug($data['title']);
-  }
-  if (isset($data['content'])) {
-    $blog->content = $data['content'];
-  }
-  if (isset($data['excerpt'])) {
-    $blog->excerpt = ValidationHelper::sanitizeInput($data['excerpt']);
-  }
-  if (isset($data['featured_image'])) {
-    $blog->featured_image = $data['featured_image'];
-  }
-  if (isset($data['category_id'])) {
-    $blog->category_id = (int)$data['category_id'];
-  }
-  if (isset($data['status'])) {
-    $blog->status = $data['status'];
-    if ($blog->status === BLOG_PUBLISHED && !$blog->published_at) {
-      $blog->published_at = date('Y-m-d H:i:s');
+// PUT: Update blog
+elseif ($method === 'PUT') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    $action = explode('/', trim($path, '/'));
+    
+    if (!isset($action[0]) || !is_numeric($action[0])) {
+        ResponseHelper::error('Blog ID is required', HTTP_BAD_REQUEST);
     }
-  }
-  if (isset($data['seo_title'])) {
-    $blog->seo_title = $data['seo_title'];
-  }
-  if (isset($data['seo_description'])) {
-    $blog->seo_description = $data['seo_description'];
-  }
-
-  if ($blog->update()) {
-    // Update tags if provided
-    if (isset($data['tags'])) {
-      $blog->deleteTags($id);
-      if (is_array($data['tags']) && !empty($data['tags'])) {
-        $blog->addTags($id, $data['tags']);
-      }
+    
+    $blogId = intval($action[0]);
+    
+    try {
+        $query = "UPDATE blogs SET title = ?, content = ?, image = ?, category = ? WHERE id = ?";
+        $stmt = $db->prepare($query);
+        
+        $image = $data['image'] ?? null;
+        $category = $data['category'] ?? 'General';
+        
+        $stmt->bind_param('ssssi',
+            $data['title'],
+            $data['content'],
+            $image,
+            $category,
+            $blogId
+        );
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Blog updated successfully');
+        } else {
+            ResponseHelper::error('Failed to update blog', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
     }
-
-    ResponseHelper::success(null, 'Blog updated successfully');
-  } else {
-    ResponseHelper::error('Failed to update blog', HTTP_INTERNAL_ERROR);
-  }
 }
 
-function deleteBlog($id)
-{
-  $user = AuthMiddleware::getAuthenticatedUser();
+// DELETE: Delete blog
+elseif ($method === 'DELETE') {
+    $action = explode('/', trim($path, '/'));
+    
+    if (!isset($action[0]) || !is_numeric($action[0])) {
+        ResponseHelper::error('Blog ID is required', HTTP_BAD_REQUEST);
+    }
+    
+    $blogId = intval($action[0]);
+    
+    try {
+        $query = "DELETE FROM blogs WHERE id = ?";
+        $stmt = $db->prepare($query);
+        $stmt->bind_param('i', $blogId);
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Blog deleted successfully');
+        } else {
+            ResponseHelper::error('Failed to delete blog', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+    }
+}
 
-  $blog = new Blog();
-  if (!$blog->findById($id)) {
-    ResponseHelper::notFound('Blog');
-  }
-
-  // Check if user is author or admin
-  $userRoles = $user->getUserRoles($user->id);
-  if ($blog->author_id != $user->id && !in_array(ROLE_ADMIN, $userRoles)) {
-    ResponseHelper::forbidden('You can only delete your own blogs');
-  }
-
-  if ($blog->delete()) {
-    ResponseHelper::success(null, 'Blog deleted successfully');
-  } else {
-    ResponseHelper::error('Failed to delete blog', HTTP_INTERNAL_ERROR);
-  }
+else {
+    ResponseHelper::error('Method not allowed', 405);
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useState, useContext } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   FiHome,
@@ -14,6 +14,7 @@ import {
   FiAward,
   FiTrendingUp,
 } from 'react-icons/fi';
+import { AuthContext } from '../contexts/AuthContext';
 
 // Navigation items for reader sidebar
 const navItems = [
@@ -43,16 +44,14 @@ const navItems = [
 export default function ReaderLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useContext(AuthContext);
 
   const isActive = (path) => location.pathname === path;
 
-  // Mock user data
-  const user = {
-    name: 'John Doe',
-    email: 'john@example.com',
-    avatar: 'JD',
-    readingStreak: 12,
-    booksRead: 47,
+  const handleLogout = async () => {
+    await logout();
+    navigate('/');
   };
 
   return (
@@ -97,11 +96,15 @@ export default function ReaderLayout() {
               {/* User Profile Summary */}
               <div className='mt-6 flex items-center space-x-3'>
                 <div className='w-12 h-12 rounded-full gradient-bg-main flex items-center justify-center text-white font-bold text-lg'>
-                  {user.avatar}
+                  {user?.name?.charAt(0)?.toUpperCase() || 'U'}
                 </div>
                 <div>
-                  <p className='font-semibold text-white'>{user.name}</p>
-                  <p className='text-sm text-slate-400'>Reader since 2024</p>
+                  <p className='font-semibold text-white'>
+                    {user?.name || 'Reader'}
+                  </p>
+                  <p className='text-sm text-slate-400'>
+                    {user?.email || 'reader@bloglib.com'}
+                  </p>
                 </div>
               </div>
 
@@ -110,16 +113,12 @@ export default function ReaderLayout() {
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiTrendingUp className='w-4 h-4 text-emerald mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Streak</p>
-                  <p className='text-sm font-bold text-white'>
-                    {user.readingStreak} days
-                  </p>
+                  <p className='text-sm font-bold text-white'>12 days</p>
                 </div>
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiBookOpen className='w-4 h-4 text-royal-blue mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Read</p>
-                  <p className='text-sm font-bold text-white'>
-                    {user.booksRead} items
-                  </p>
+                  <p className='text-sm font-bold text-white'>47 items</p>
                 </div>
               </div>
             </div>
@@ -161,7 +160,10 @@ export default function ReaderLayout() {
                 <FiBookOpen size={18} />
                 <span>Browse Content</span>
               </Link>
-              <button className='flex items-center space-x-3 px-4 py-3 w-full rounded-lg text-slate-300 hover:bg-red-500/20 hover:text-red-500 transition-all'>
+              <button
+                onClick={handleLogout}
+                className='flex items-center space-x-3 px-4 py-3 w-full rounded-lg text-slate-300 hover:bg-red-500/20 hover:text-red-500 transition-all'
+              >
                 <FiLogOut size={18} />
                 <span>Logout</span>
               </button>

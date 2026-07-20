@@ -17,12 +17,10 @@ const FeaturedBooks = () => {
         if (response.success && response.data) {
           setBooks(response.data.slice(0, 3));
         } else {
-          // Fallback to demo data if API fails
           setBooks(getDemoBooks());
         }
       } catch (err) {
         console.error('Error fetching books:', err);
-        // Use demo data as fallback
         setBooks(getDemoBooks());
       } finally {
         setLoading(false);
@@ -38,7 +36,7 @@ const FeaturedBooks = () => {
       title: 'The Art of Web Design',
       excerpt:
         'Master the principles of modern web design with this comprehensive guide to creating beautiful, functional websites...',
-      image: 'https://images.unsplash.com/photo-150784272343-583f20270319?w=800',
+      image: 'https://images.unsplash.com/photo-1507842217343-583f20270319?w=800',
       author: {
         name: 'John Designer',
         avatar:

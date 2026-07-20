@@ -17,12 +17,10 @@ const FeaturedBlogs = () => {
         if (response.success && response.data) {
           setBlogs(response.data.slice(0, 3));
         } else {
-          // Fallback to demo data if API fails
           setBlogs(getDemoBlogs());
         }
       } catch (err) {
         console.error('Error fetching blogs:', err);
-        // Use demo data as fallback
         setBlogs(getDemoBlogs());
       } finally {
         setLoading(false);

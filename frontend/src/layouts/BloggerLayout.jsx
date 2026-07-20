@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useState, useContext } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   FiHome,
@@ -16,6 +16,7 @@ import {
   FiTrendingUp,
   FiUsers,
 } from 'react-icons/fi';
+import { AuthContext } from '../contexts/AuthContext';
 
 // Navigation items for blogger sidebar
 const navItems = [
@@ -48,18 +49,14 @@ const navItems = [
 export default function BloggerLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useContext(AuthContext);
 
   const isActive = (path) => location.pathname === path;
 
-  // Mock blogger data
-  const blogger = {
-    name: 'Sarah Johnson',
-    email: 'sarah@bloglib.com',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330',
-    totalPosts: 47,
-    totalViews: 156000,
-    totalLikes: 12300,
-    totalFollowers: 8900,
+  const handleLogout = async () => {
+    await logout();
+    navigate('/');
   };
 
   return (
@@ -103,13 +100,19 @@ export default function BloggerLayout() {
 
               {/* Blogger Profile Summary */}
               <div className='mt-6 flex items-center space-x-3'>
-                <img
-                  src={blogger.avatar}
-                  alt={blogger.name}
-                  className='w-12 h-12 rounded-full object-cover'
-                />
+                {user?.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt={user.name}
+                    className='w-12 h-12 rounded-full object-cover'
+                  />
+                ) : (
+                  <div className='w-12 h-12 rounded-full gradient-bg-main flex items-center justify-center text-white font-bold text-lg'>
+                    {user?.name?.charAt(0)?.toUpperCase() || 'B'}
+                  </div>
+                )}
                 <div>
-                  <p className='font-semibold text-white'>{blogger.name}</p>
+                  <p className='font-semibold text-white'>{user?.name || 'Blogger'}</p>
                   <p className='text-sm text-slate-400'>Blogger</p>
                 </div>
               </div>
@@ -119,30 +122,22 @@ export default function BloggerLayout() {
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiFileText className='w-4 h-4 text-royal-blue mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Posts</p>
-                  <p className='text-sm font-bold text-white'>
-                    {blogger.totalPosts}
-                  </p>
+                  <p className='text-sm font-bold text-white'>47</p>
                 </div>
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiTrendingUp className='w-4 h-4 text-emerald mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Views</p>
-                  <p className='text-sm font-bold text-white'>
-                    {blogger.totalViews.toLocaleString()}
-                  </p>
+                  <p className='text-sm font-bold text-white'>156K</p>
                 </div>
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiStar className='w-4 h-4 text-yellow-500 mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Likes</p>
-                  <p className='text-sm font-bold text-white'>
-                    {blogger.totalLikes.toLocaleString()}
-                  </p>
+                  <p className='text-sm font-bold text-white'>12.3K</p>
                 </div>
                 <div className='bg-slate-700/50 rounded-lg p-2 text-center'>
                   <FiUsers className='w-4 h-4 text-indigo mx-auto mb-1' />
                   <p className='text-xs text-slate-400'>Followers</p>
-                  <p className='text-sm font-bold text-white'>
-                    {blogger.totalFollowers.toLocaleString()}
-                  </p>
+                  <p className='text-sm font-bold text-white'>8.9K</p>
                 </div>
               </div>
             </div>
@@ -184,7 +179,10 @@ export default function BloggerLayout() {
                 <FiFileText size={18} />
                 <span>Browse Blogs</span>
               </Link>
-              <button className='flex items-center space-x-3 px-4 py-3 w-full rounded-lg text-slate-300 hover:bg-red-500/20 hover:text-red-500 transition-all'>
+              <button
+                onClick={handleLogout}
+                className='flex items-center space-x-3 px-4 py-3 w-full rounded-lg text-slate-300 hover:bg-red-500/20 hover:text-red-500 transition-all'
+              >
                 <FiLogOut size={18} />
                 <span>Logout</span>
               </button>

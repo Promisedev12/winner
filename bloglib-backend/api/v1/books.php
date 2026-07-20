@@ -1,237 +1,193 @@
 <?php
-
-
 require_once __DIR__ . '/../../config/config.php';
-require_once __DIR__ . '/../../models/Book.php';
-require_once __DIR__ . '/../../models/User.php';
 require_once __DIR__ . '/../../helpers/ResponseHelper.php';
-require_once __DIR__ . '/../../helpers/ValidationHelper.php';
-require_once __DIR__ . '/../middleware/AuthMiddleware.php';
-require_once __DIR__ . '/../middleware/RoleMiddleware.php';
+require_once __DIR__ . '/../../database/Database.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
-$path_info = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : '';
-$request = explode('/', trim($path_info, '/'));
-$action = isset($request[0]) ? $request[0] : '';
-$id = isset($request[1]) ? (int)$request[1] : null;
+$path = isset($_GET['path']) ? $_GET['path'] : '';
 
-switch ($method) {
-  case 'GET':
-    if ($id) {
-      getBook($id);
-    } else {
-      getAllBooks();
-    }
-    break;
+// Initialize database connection
+$db = new Database();
+
+// GET: Fetch books
+if ($method === 'GET') {
+    $action = explode('/', trim($path, '/'));
     
-  case 'POST':
-    RoleMiddleware::requireAuthor();
-    createBook();
-    break;
-
-  case 'PUT':
-    RoleMiddleware::requireAuthor();
-    if ($id) {
-      updateBook($id);
-    } else {
-      ResponseHelper::error('Book ID required', HTTP_BAD_REQUEST);
+    if (empty($action[0]) || $action[0] === 'books') {
+        // Get all books or filter
+        $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+        $limit = isset($_GET['limit']) ? min(100, intval($_GET['limit'])) : 8;
+        $offset = ($page - 1) * $limit;
+        
+        try {
+            $query = "SELECT id, title, description as excerpt, cover_image as image, author_id, category, 
+                     likes, reviews_count, created_at as date, pages
+                     FROM books WHERE status = 'published' ORDER BY created_at DESC 
+                     LIMIT ? OFFSET ?";
+            
+            $stmt = $db->prepare($query);
+            $stmt->bind_param('ii', $limit, $offset);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $books = [];
+            
+            while ($row = $result->fetch_assoc()) {
+                // Get author info
+                $authorQuery = "SELECT id, name, avatar FROM users WHERE id = ?";
+                $authorStmt = $db->prepare($authorQuery);
+                $authorStmt->bind_param('i', $row['author_id']);
+                $authorStmt->execute();
+                $authorResult = $authorStmt->get_result();
+                $author = $authorResult->fetch_assoc();
+                
+                $row['author'] = $author ?: ['name' => 'Unknown', 'avatar' => null];
+                $books[] = $row;
+            }
+            
+            ResponseHelper::success('Books fetched successfully', [
+                'data' => $books,
+                'page' => $page,
+                'limit' => $limit
+            ]);
+        } catch (Exception $e) {
+            ResponseHelper::error('Failed to fetch books: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+        }
+    } elseif (isset($action[0]) && is_numeric($action[0])) {
+        // Get single book by ID
+        $bookId = intval($action[0]);
+        
+        try {
+            $query = "SELECT * FROM books WHERE id = ? AND status = 'published'";
+            $stmt = $db->prepare($query);
+            $stmt->bind_param('i', $bookId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $book = $result->fetch_assoc();
+            
+            if ($book) {
+                // Get author info
+                $authorQuery = "SELECT id, name, avatar FROM users WHERE id = ?";
+                $authorStmt = $db->prepare($authorQuery);
+                $authorStmt->bind_param('i', $book['author_id']);
+                $authorStmt->execute();
+                $authorResult = $authorStmt->get_result();
+                $book['author'] = $authorResult->fetch_assoc();
+                
+                ResponseHelper::success('Book fetched successfully', $book);
+            } else {
+                ResponseHelper::error('Book not found', HTTP_NOT_FOUND);
+            }
+        } catch (Exception $e) {
+            ResponseHelper::error('Failed to fetch book: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+        }
     }
-    break;
+}
 
-  case 'DELETE':
-    RoleMiddleware::requireAuthor();
-    if ($id) {
-      deleteBook($id);
-    } else {
-      ResponseHelper::error('Book ID required', HTTP_BAD_REQUEST);
+// POST: Create book (requires authentication)
+elseif ($method === 'POST') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    
+    // Check authentication
+    $token = isset(getallheaders()['Authorization']) ? str_replace('Bearer ', '', getallheaders()['Authorization']) : null;
+    if (!$token) {
+        ResponseHelper::error('Unauthorized', HTTP_UNAUTHORIZED);
     }
-    break;
-
-  default:
-    ResponseHelper::error('Method not allowed', HTTP_BAD_REQUEST);
-}
-
-function getAllBooks()
-{
-  $book = new Book();
-  $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-  $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : ITEMS_PER_PAGE;
-  $status = isset($_GET['status']) ? $_GET['status'] : 'published';
-  $category = isset($_GET['category']) ? $_GET['category'] : null;
-  $search = isset($_GET['search']) ? $_GET['search'] : null;
-  $isPremium = isset($_GET['premium']) ? filter_var($_GET['premium'], FILTER_VALIDATE_BOOLEAN) : null;
-
-  $filters = [
-    'status' => $status,
-    'category' => $category,
-    'search' => $search,
-    'is_premium' => $isPremium
-  ];
-
-  $result = $book->getAll($page, $limit, $filters);
-
-  ResponseHelper::success([
-    'books' => $result['books'],
-    'pagination' => [
-      'current_page' => $page,
-      'per_page' => $limit,
-      'total' => $result['total'],
-      'last_page' => ceil($result['total'] / $limit)
-    ]
-  ]);
-}
-
-function getBook($id)
-{
-  $book = new Book();
-  if ($book->findById($id)) {
-    ResponseHelper::success([
-      'id' => $book->id,
-      'title' => $book->title,
-      'subtitle' => $book->subtitle,
-      'slug' => $book->slug,
-      'description' => $book->description,
-      'cover_image' => $book->cover_image,
-      'file_url' => $book->file_url,
-      'file_type' => $book->file_type,
-      'author_id' => $book->author_id,
-  
-      'category_id' => $book->category_id,
-  
-      'price' => $book->price,
-      'is_premium' => $book->is_premium,
-      'downloads' => $book->downloads,
-      'rating' => $book->rating,
-      'reviews_count' => $book->reviews_count,
-      'pages' => $book->pages,
-      'language' => $book->language,
-      'edition' => $book->edition,
-      'isbn' => $book->isbn,
-      'status' => $book->status,
-      'published_at' => $book->published_at,
-      'created_at' => $book->created_at
-    ]);
-  } else {
-    ResponseHelper::notFound('Book');
-  }
-}
-
-function createBook()
-{
-  $data = json_decode(file_get_contents("php://input"), true);
-  $user = AuthMiddleware::getAuthenticatedUser();
-
-  $required = ['title', 'description', 'file_url'];
-  $errors = ValidationHelper::validateRequired($data, $required);
-  if ($errors !== true) {
-    ResponseHelper::validationError($errors);
-  }
-
-  $book = new Book();
-  $book->title = ValidationHelper::sanitizeInput($data['title']);
-  $book->subtitle = isset($data['subtitle']) ? ValidationHelper::sanitizeInput($data['subtitle']) : null;
-  $book->slug = Sanitizer::sanitizeSlug($data['title']);
-  $book->description = $data['description'];
-  $book->cover_image = isset($data['cover_image']) ? $data['cover_image'] : null;
-  $book->file_url = $data['file_url'];
-  $book->file_type = isset($data['file_type']) ? $data['file_type'] : 'pdf';
-  $book->author_id = $user->id;
-  $book->category_id = isset($data['category_id']) ? (int)$data['category_id'] : null;
-  $book->price = isset($data['price']) ? (float)$data['price'] : 0;
-  $book->is_premium = isset($data['is_premium']) ? $data['is_premium'] : ($book->price > 0);
-  $book->pages = isset($data['pages']) ? (int)$data['pages'] : null;
-  $book->language = isset($data['language']) ? $data['language'] : 'English';
-  $book->edition = isset($data['edition']) ? $data['edition'] : null;
-  $book->isbn = isset($data['isbn']) ? $data['isbn'] : null;
-  $book->status = isset($data['status']) ? $data['status'] : BOOK_DRAFT;
-
-  if ($book->status === BOOK_PUBLISHED) {
-    $book->published_at = date('Y-m-d H:i:s');
-  }
-
-  if ($book->create()) {
-    ResponseHelper::success(['id' => $book->id], 'Book created successfully', HTTP_CREATED);
-  } else {
-    ResponseHelper::error('Failed to create book', HTTP_INTERNAL_ERROR);
-  }
-}
-
-function updateBook($id)
-{
-  $data = json_decode(file_get_contents("php://input"), true);
-  $user = AuthMiddleware::getAuthenticatedUser();
-
-  $book = new Book();
-  if (!$book->findById($id)) {
-    ResponseHelper::notFound('Book');
-  }
-
-  if ($book->author_id != $user->id && !$user->hasRole($user->id, ROLE_ADMIN)) {
-    ResponseHelper::forbidden('You can only edit your own books');
-  }
-
-  if (isset($data['title'])) {
-    $book->title = ValidationHelper::sanitizeInput($data['title']);
-    $book->slug = Sanitizer::sanitizeSlug($data['title']);
-  }
-  if (isset($data['subtitle'])) {
-    $book->subtitle = ValidationHelper::sanitizeInput($data['subtitle']);
-  }
-  if (isset($data['description'])) {
-    $book->description = $data['description'];
-  }
-  if (isset($data['cover_image'])) {
-    $book->cover_image = $data['cover_image'];
-  }
-  if (isset($data['category_id'])) {
-    $book->category_id = (int)$data['category_id'];
-  }
-  if (isset($data['price'])) {
-    $book->price = (float)$data['price'];
-    $book->is_premium = $book->price > 0;
-  }
-  if (isset($data['pages'])) {
-    $book->pages = (int)$data['pages'];
-  }
-  if (isset($data['language'])) {
-    $book->language = $data['language'];
-  }
-  if (isset($data['edition'])) {
-    $book->edition = $data['edition'];
-  }
-  if (isset($data['isbn'])) {
-    $book->isbn = $data['isbn'];
-  }
-  if (isset($data['status'])) {
-    $book->status = $data['status'];
-    if ($book->status === BOOK_PUBLISHED && !$book->published_at) {
-      $book->published_at = date('Y-m-d H:i:s');
+    
+    // Validate required fields
+    if (!isset($data['title']) || !isset($data['description'])) {
+        ResponseHelper::error('Title and description are required', HTTP_BAD_REQUEST);
     }
-  }
-
-  if ($book->update()) {
-    ResponseHelper::success(null, 'Book updated successfully');
-  } else {
-    ResponseHelper::error('Failed to update book', HTTP_INTERNAL_ERROR);
-  }
+    
+    try {
+        $query = "INSERT INTO books (title, description, cover_image, category, author_id, status, pages, created_at) 
+                 VALUES (?, ?, ?, ?, ?, 'published', ?, NOW())";
+        $stmt = $db->prepare($query);
+        
+        $userId = 1;
+        $pages = isset($data['pages']) ? $data['pages'] : 200;
+        $image = $data['cover_image'] ?? null;
+        $category = $data['category'] ?? 'General';
+        
+        $stmt->bind_param('ssssii', 
+            $data['title'], 
+            $data['description'], 
+            $image,
+            $category,
+            $userId,
+            $pages
+        );
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Book created successfully', ['id' => $db->insert_id], HTTP_CREATED);
+        } else {
+            ResponseHelper::error('Failed to create book', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+    }
 }
 
-function deleteBook($id)
-{
-  $user = AuthMiddleware::getAuthenticatedUser();
+// PUT: Update book
+elseif ($method === 'PUT') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    $action = explode('/', trim($path, '/'));
+    
+    if (!isset($action[0]) || !is_numeric($action[0])) {
+        ResponseHelper::error('Book ID is required', HTTP_BAD_REQUEST);
+    }
+    
+    $bookId = intval($action[0]);
+    
+    try {
+        $query = "UPDATE books SET title = ?, description = ?, cover_image = ?, category = ? WHERE id = ?";
+        $stmt = $db->prepare($query);
+        
+        $image = $data['cover_image'] ?? null;
+        $category = $data['category'] ?? 'General';
+        
+        $stmt->bind_param('ssssi',
+            $data['title'],
+            $data['description'],
+            $image,
+            $category,
+            $bookId
+        );
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Book updated successfully');
+        } else {
+            ResponseHelper::error('Failed to update book', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+    }
+}
 
-  $book = new Book();
-  if (!$book->findById($id)) {
-    ResponseHelper::notFound('Book');
-  }
+// DELETE: Delete book
+elseif ($method === 'DELETE') {
+    $action = explode('/', trim($path, '/'));
+    
+    if (!isset($action[0]) || !is_numeric($action[0])) {
+        ResponseHelper::error('Book ID is required', HTTP_BAD_REQUEST);
+    }
+    
+    $bookId = intval($action[0]);
+    
+    try {
+        $query = "DELETE FROM books WHERE id = ?";
+        $stmt = $db->prepare($query);
+        $stmt->bind_param('i', $bookId);
+        
+        if ($stmt->execute()) {
+            ResponseHelper::success('Book deleted successfully');
+        } else {
+            ResponseHelper::error('Failed to delete book', HTTP_INTERNAL_ERROR);
+        }
+    } catch (Exception $e) {
+        ResponseHelper::error('Error: ' . $e->getMessage(), HTTP_INTERNAL_ERROR);
+    }
+}
 
-  if ($book->author_id != $user->id && !$user->hasRole($user->id, ROLE_ADMIN)) {
-    ResponseHelper::forbidden('You can only delete your own books');
-  }
-
-  if ($book->delete()) {
-    ResponseHelper::success(null, 'Book deleted successfully');
-  } else {
-    ResponseHelper::error('Failed to delete book', HTTP_INTERNAL_ERROR);
-  }
+else {
+    ResponseHelper::error('Method not allowed', 405);
 }
